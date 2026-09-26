@@ -43,14 +43,10 @@ func (s State) String() string {
 
 // Breaker coordinates state transitions and request admission based on downstream health telemetry.
 type Breaker struct {
-	mu                   sync.Mutex
-	state                State
-	window               *Window
-	minRequests          int
-	failureRateThreshold float64
-	baseCooldown         time.Duration
-	maxCooldown          time.Duration
-	maxProbes            int
+	mu     sync.Mutex
+	state  State
+	config Config
+	window *Window
 
 	consecutiveTrips int
 	openUntil        time.Time
@@ -59,19 +55,21 @@ type Breaker struct {
 	lastStateChange  time.Time
 }
 
-// New creates a new Breaker configured with given settings.
-func New(minRequests int, failureRateThreshold float64, baseCooldown, maxCooldown time.Duration,
-	maxProbes int, windowDuration time.Duration, windowBuckets int) *Breaker {
+// New creates a new Breaker configured with given config.
+func New(config Config) *Breaker {
+	config.Normalize()
+
 	return &Breaker{
-		state:                StateClosed,
-		lastStateChange:      time.Now(),
-		minRequests:          minRequests,
-		failureRateThreshold: failureRateThreshold,
-		baseCooldown:         baseCooldown,
-		maxCooldown:          maxCooldown,
-		maxProbes:            maxProbes,
-		window:               NewWindow(windowDuration, windowBuckets),
+		state:           StateClosed,
+		lastStateChange: time.Now(),
+		window:          NewWindow(config.WindowDuration, config.WindowBuckets),
+		config:          config,
 	}
+}
+
+// Default creates a new Breaker configured with default config.
+func Default() *Breaker {
+	return New(DefaultConfig())
 }
 
 // Allow determines if an outbound request should proceed.
@@ -91,7 +89,7 @@ func (b *Breaker) Allow() error {
 		return nil
 
 	case StateHalfOpen:
-		if b.inFlightProbes < b.maxProbes {
+		if b.inFlightProbes < b.config.MaxProbes {
 			b.inFlightProbes++
 			return nil
 		}
@@ -128,7 +126,7 @@ func (b *Breaker) Update(success bool) {
 		b.window.Update(success)
 		totalRequests, _, failureRate := b.window.Summary()
 
-		if totalRequests >= b.minRequests && failureRate >= b.failureRateThreshold {
+		if totalRequests >= b.config.MinRequests && failureRate >= b.config.FailureRateThreshold {
 			b.toOpen(now)
 		}
 
@@ -137,7 +135,7 @@ func (b *Breaker) Update(success bool) {
 			b.toOpen(now)
 		} else {
 			b.successfulProbes++
-			if b.successfulProbes >= b.maxProbes {
+			if b.successfulProbes >= b.config.MaxProbes {
 				b.toClosed(now)
 			}
 		}
@@ -184,8 +182,8 @@ func (b *Breaker) toOpen(now time.Time) {
 	b.window.Reset()
 
 	factor := math.Pow(2, float64(b.consecutiveTrips))
-	cooldown := float64(b.baseCooldown) * factor
-	backoff := min(cooldown, float64(b.maxCooldown))
+	cooldown := float64(b.config.BaseCooldown) * factor
+	backoff := min(cooldown, float64(b.config.MaxCooldown))
 	//nolint:gosec // G404: weak random generator is safe for calculating retry jitter
 	jitter := rand.Float64() * 0.25 * backoff
 
