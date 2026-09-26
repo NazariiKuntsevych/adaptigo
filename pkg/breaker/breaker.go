@@ -1,38 +1,29 @@
-// Package breaker implements a basic, three-state circuit breaker
-// with consecutive failure tracking and fixed cooldown recovery.
+// Package breaker implements an adaptive, three-state circuit breaker with
+// statistical failure tracking, exponential backoff, and trial probe rate-limiting.
 package breaker
 
 import (
 	"errors"
+	"math"
+	"math/rand/v2"
 	"sync"
 	"time"
 )
 
-const (
-	// defaultFailureThreshold is the number of consecutive failures needed to trip the breaker.
-	defaultFailureThreshold = 5
-
-	// defaultSuccessThreshold is the number of consecutive successful probes required to close the breaker.
-	defaultSuccessThreshold = 2
-
-	// defaultCooldown is the sleep duration before attempting recovery in half-open state.
-	defaultCooldown = 5 * time.Second
-)
-
-// ErrCircuitOpen indicates that the circuit is currently open and requests are blocked.
+// ErrCircuitOpen indicates that the circuit is currently open or probe capacity is exhausted.
 var ErrCircuitOpen = errors.New("circuit breaker is open")
 
 // State represents the operational state of the circuit breaker.
 type State int
 
 const (
-	// StateClosed allows requests through and counts consecutive failures.
+	// StateClosed allows requests through and monitors failure rates.
 	StateClosed State = iota
 
-	// StateHalfOpen permits trial requests to test downstream service recovery.
+	// StateHalfOpen permits a limited number of trial probes to test downstream recovery.
 	StateHalfOpen
 
-	// StateOpen fails requests fast without touching the network.
+	// StateOpen sheds incoming traffic fast without reaching the network.
 	StateOpen
 )
 
@@ -50,19 +41,36 @@ func (s State) String() string {
 	}
 }
 
-// Breaker coordinates state transitions based on consecutive call outcomes.
+// Breaker coordinates state transitions and request admission based on downstream health telemetry.
 type Breaker struct {
-	mu        sync.Mutex
-	state     State
-	failures  int
-	successes int
-	openUntil time.Time
+	mu                   sync.Mutex
+	state                State
+	window               *Window
+	minRequests          int
+	failureRateThreshold float64
+	baseCooldown         time.Duration
+	maxCooldown          time.Duration
+	maxProbes            int
+
+	consecutiveTrips int
+	openUntil        time.Time
+	inFlightProbes   int
+	successfulProbes int
+	lastStateChange  time.Time
 }
 
-// New creates a new Breaker initialized in the CLOSED state.
-func New() *Breaker {
+// New creates a new Breaker configured with given settings.
+func New(minRequests int, failureRateThreshold float64, baseCooldown, maxCooldown time.Duration,
+	maxProbes int, windowDuration time.Duration, windowBuckets int) *Breaker {
 	return &Breaker{
-		state: StateClosed,
+		state:                StateClosed,
+		lastStateChange:      time.Now(),
+		minRequests:          minRequests,
+		failureRateThreshold: failureRateThreshold,
+		baseCooldown:         baseCooldown,
+		maxCooldown:          maxCooldown,
+		maxProbes:            maxProbes,
+		window:               NewWindow(windowDuration, windowBuckets),
 	}
 }
 
@@ -75,20 +83,40 @@ func (b *Breaker) Allow() error {
 	now := time.Now()
 
 	if b.state == StateOpen && now.After(b.openUntil) {
-		b.toHalfOpen()
+		b.toHalfOpen(now)
 	}
 
 	switch b.state {
-	case StateClosed, StateHalfOpen:
+	case StateClosed:
 		return nil
+
+	case StateHalfOpen:
+		if b.inFlightProbes < b.maxProbes {
+			b.inFlightProbes++
+			return nil
+		}
+		return ErrCircuitOpen
+
 	case StateOpen:
 		return ErrCircuitOpen
+
 	default:
 		return ErrCircuitOpen
 	}
 }
 
-// Update registers the outcome of a request and executes state transitions.
+// RollbackProbe releases an allocated probe slot if the request was aborted
+// before reaching the downstream dependency (e.g., dropped by a concurrency limiter).
+func (b *Breaker) RollbackProbe() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.state == StateHalfOpen && b.inFlightProbes > 0 {
+		b.inFlightProbes--
+	}
+}
+
+// Update recalculates circuit metrics and transitions breaker state based on invocation outcome.
 func (b *Breaker) Update(success bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -97,22 +125,20 @@ func (b *Breaker) Update(success bool) {
 
 	switch b.state {
 	case StateClosed:
-		if success {
-			b.failures = 0
-		} else {
-			b.failures++
-			if b.failures >= defaultFailureThreshold {
-				b.toOpen(now)
-			}
+		b.window.Update(success)
+		totalRequests, _, failureRate := b.window.Summary()
+
+		if totalRequests >= b.minRequests && failureRate >= b.failureRateThreshold {
+			b.toOpen(now)
 		}
 
 	case StateHalfOpen:
 		if !success {
 			b.toOpen(now)
 		} else {
-			b.successes++
-			if b.successes >= defaultSuccessThreshold {
-				b.toClosed()
+			b.successfulProbes++
+			if b.successfulProbes >= b.maxProbes {
+				b.toClosed(now)
 			}
 		}
 	}
@@ -123,30 +149,46 @@ func (b *Breaker) State() State {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if b.state == StateOpen && time.Now().After(b.openUntil) {
-		b.toHalfOpen()
+	now := time.Now()
+	if b.state == StateOpen && now.After(b.openUntil) {
+		b.toHalfOpen(now)
 	}
 	return b.state
 }
 
-// toClosed transitions the circuit to CLOSED and resets tracking counters.
-func (b *Breaker) toClosed() {
+// toClosed transitions the circuit to the CLOSED state, resetting metrics and probe counters.
+func (b *Breaker) toClosed(now time.Time) {
 	b.state = StateClosed
-	b.failures = 0
-	b.successes = 0
+	b.lastStateChange = now
+	b.inFlightProbes = 0
+	b.successfulProbes = 0
+	b.consecutiveTrips = 0
+	b.window.Reset()
 }
 
-// toHalfOpen transitions the circuit to HALF-OPEN to probe service recovery.
-func (b *Breaker) toHalfOpen() {
+// toHalfOpen transitions the circuit to the HALF-OPEN state to begin trial probing.
+func (b *Breaker) toHalfOpen(now time.Time) {
 	b.state = StateHalfOpen
-	b.failures = 0
-	b.successes = 0
+	b.lastStateChange = now
+	b.inFlightProbes = 0
+	b.successfulProbes = 0
+	b.window.Reset()
 }
 
-// toOpen transitions the circuit to OPEN and schedules the cooldown window.
+// toOpen transitions the circuit to the OPEN state and calculates the exponential backoff cooldown.
 func (b *Breaker) toOpen(now time.Time) {
 	b.state = StateOpen
-	b.failures = 0
-	b.successes = 0
-	b.openUntil = now.Add(defaultCooldown)
+	b.lastStateChange = now
+	b.inFlightProbes = 0
+	b.successfulProbes = 0
+	b.window.Reset()
+
+	factor := math.Pow(2, float64(b.consecutiveTrips))
+	cooldown := float64(b.baseCooldown) * factor
+	backoff := min(cooldown, float64(b.maxCooldown))
+	//nolint:gosec // G404: weak random generator is safe for calculating retry jitter
+	jitter := rand.Float64() * 0.25 * backoff
+
+	b.openUntil = now.Add(time.Duration(backoff + jitter))
+	b.consecutiveTrips++
 }
