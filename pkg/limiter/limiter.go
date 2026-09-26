@@ -1,44 +1,55 @@
-// Package limiter provides concurrency limiting mechanisms to prevent downstream service
-// saturation by strictly controlling the number of concurrent in-flight executions.
+// Package limiter implements an adaptive concurrency limiter based on the gradient
+// algorithm and Little's Law to prevent latency degradation and downstream queue saturation.
 package limiter
 
 import (
 	"errors"
+	"math"
 	"sync"
+	"time"
 )
 
 // ErrLimitExceeded is returned when the number of concurrent in-flight requests
-// reaches or exceeds the configured concurrency limit.
+// reaches or exceeds the dynamically computed concurrency limit.
 var ErrLimitExceeded = errors.New("concurrency limit exceeded")
 
-// Limiter manages fixed concurrency thresholds using in-flight execution counters.
+// Limiter manages dynamic concurrency limits using measured round-trip latencies.
 type Limiter struct {
-	mu       sync.Mutex
-	limit    int
+	mu                    sync.Mutex
+	minLimit              float64
+	maxLimit              float64
+	queueHeadroom         float64
+	smoothingFactor       float64
+	baselineResetInterval time.Duration
 
-	inFlight int
+	limit             float64
+	inFlight          int
+	baseRTT           time.Duration
+	lastBaseRTTChange time.Time
 }
 
-// New creates a new Limiter with the specified maximum concurrency limit.
-// If maxConcurrency is less than 1, it falls back to a safe minimum of 1.
-func New(limit int) *Limiter {
-	if limit < 1 {
-		limit = 1
-	}
-
+// New creates a new Limiter configured with given params.
+func New(initialLimit, minLimit, maxLimit, queueHeadroom, smoothingFactor float64,
+	baselineResetInterval time.Duration) *Limiter {
 	return &Limiter{
-		limit: limit,
+		lastBaseRTTChange:     time.Now(),
+		minLimit:              minLimit,
+		maxLimit:              maxLimit,
+		queueHeadroom:         queueHeadroom,
+		smoothingFactor:       smoothingFactor,
+		baselineResetInterval: baselineResetInterval,
+		limit:                 initialLimit,
 	}
 }
 
 // Acquire attempts to reserve an execution slot.
 // On success, it returns an idempotent release function that must be called once the operation completes.
-// If the maximum concurrency limit is reached, it returns ErrLimitExceeded.
+// If the current concurrency limit is exceeded, it returns ErrLimitExceeded.
 func (l *Limiter) Acquire() (func(), error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if l.inFlight >= l.limit {
+	if float64(l.inFlight) >= l.limit {
 		return nil, ErrLimitExceeded
 	}
 
@@ -55,8 +66,44 @@ func (l *Limiter) Acquire() (func(), error) {
 	return release, nil
 }
 
-// Limit returns the configured maximum concurrency capacity.
-func (l *Limiter) Limit() int {
+// Update recalibrates the concurrency limit based on request latency and invocation success.
+func (l *Limiter) Update(rttSample time.Duration, success bool) {
+	if rttSample <= 0 {
+		return
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := time.Now()
+	var newLimit float64
+
+	if !success {
+		// Multiplicative decrease upon failure to shed load rapidly.
+		newLimit = l.limit * 0.8
+	} else {
+		// Update baseline RTT only on successful responses to prevent poisoning.
+		if now.Sub(l.lastBaseRTTChange) > l.baselineResetInterval || l.baseRTT == 0 {
+			l.baseRTT = rttSample
+			l.lastBaseRTTChange = now
+		} else if rttSample < l.baseRTT {
+			l.baseRTT = rttSample
+		}
+
+		// gradient = RTT_base / RTT_sample.
+		gradient := float64(l.baseRTT) / float64(rttSample)
+		gradient = math.Max(0.5, math.Min(1.0, gradient))
+		// newLimit = limit * gradient + queueHeadroom
+		newLimit = l.limit*gradient + l.queueHeadroom
+	}
+
+	// limit = (1 - smoothing) * limit + smoothing * newLimit
+	smoothedLimit := (1-l.smoothingFactor)*l.limit + l.smoothingFactor*newLimit
+	l.limit = math.Max(l.minLimit, math.Min(l.maxLimit, smoothedLimit))
+}
+
+// Limit returns the current calculated concurrency capacity.
+func (l *Limiter) Limit() float64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
