@@ -15,12 +15,8 @@ var ErrLimitExceeded = errors.New("concurrency limit exceeded")
 
 // Limiter manages dynamic concurrency limits using measured round-trip latencies.
 type Limiter struct {
-	mu                    sync.Mutex
-	minLimit              float64
-	maxLimit              float64
-	queueHeadroom         float64
-	smoothingFactor       float64
-	baselineResetInterval time.Duration
+	mu     sync.Mutex
+	config Config
 
 	limit             float64
 	inFlight          int
@@ -28,18 +24,20 @@ type Limiter struct {
 	lastBaseRTTChange time.Time
 }
 
-// New creates a new Limiter configured with given params.
-func New(initialLimit, minLimit, maxLimit, queueHeadroom, smoothingFactor float64,
-	baselineResetInterval time.Duration) *Limiter {
+// New creates a new Limiter configured with given config.
+func New(config Config) *Limiter {
+	config.Normalize()
+
 	return &Limiter{
-		lastBaseRTTChange:     time.Now(),
-		minLimit:              minLimit,
-		maxLimit:              maxLimit,
-		queueHeadroom:         queueHeadroom,
-		smoothingFactor:       smoothingFactor,
-		baselineResetInterval: baselineResetInterval,
-		limit:                 initialLimit,
+		limit:             config.InitialLimit,
+		lastBaseRTTChange: time.Now(),
+		config:            config,
 	}
+}
+
+// Default creates a new Limiter configured with default config.
+func Default() *Limiter {
+	return New(DefaultConfig())
 }
 
 // Acquire attempts to reserve an execution slot.
@@ -83,7 +81,7 @@ func (l *Limiter) Update(rttSample time.Duration, success bool) {
 		newLimit = l.limit * 0.8
 	} else {
 		// Update baseline RTT only on successful responses to prevent poisoning.
-		if now.Sub(l.lastBaseRTTChange) > l.baselineResetInterval || l.baseRTT == 0 {
+		if now.Sub(l.lastBaseRTTChange) > l.config.BaselineResetInterval || l.baseRTT == 0 {
 			l.baseRTT = rttSample
 			l.lastBaseRTTChange = now
 		} else if rttSample < l.baseRTT {
@@ -94,12 +92,12 @@ func (l *Limiter) Update(rttSample time.Duration, success bool) {
 		gradient := float64(l.baseRTT) / float64(rttSample)
 		gradient = math.Max(0.5, math.Min(1.0, gradient))
 		// newLimit = limit * gradient + queueHeadroom
-		newLimit = l.limit*gradient + l.queueHeadroom
+		newLimit = l.limit*gradient + l.config.QueueHeadroom
 	}
 
 	// limit = (1 - smoothing) * limit + smoothing * newLimit
-	smoothedLimit := (1-l.smoothingFactor)*l.limit + l.smoothingFactor*newLimit
-	l.limit = math.Max(l.minLimit, math.Min(l.maxLimit, smoothedLimit))
+	smoothedLimit := (1-l.config.SmoothingFactor)*l.limit + l.config.SmoothingFactor*newLimit
+	l.limit = math.Max(l.config.MinLimit, math.Min(l.config.MaxLimit, smoothedLimit))
 }
 
 // Limit returns the current calculated concurrency capacity.
