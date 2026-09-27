@@ -1,0 +1,19 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - gosec
+    - bodyclose
+    - contextcheck
+    - noctx
+    - errorlint
+    - revive
+    - gocritic
+    - gocyclo
