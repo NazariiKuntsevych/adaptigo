@@ -10,27 +10,26 @@ import (
 
 // Tracker dynamically computes request timeouts based on observed network latencies.
 type Tracker struct {
-	mu         sync.RWMutex
-	minTimeout time.Duration
-	maxTimeout time.Duration
-	alpha      float64
-	beta       float64
-	k          float64
+	mu     sync.RWMutex
+	config Config
 
 	initialized bool
 	smoothedRTT time.Duration
 	rttVar      time.Duration
 }
 
-// New creates a new Tracker configured with given params.
-func New(minTimeout, maxTimeout time.Duration, alpha, beta, k float64) *Tracker {
+// New creates a new Tracker configured with given config.
+func New(config Config) *Tracker {
+	config.Normalize()
+
 	return &Tracker{
-		minTimeout: minTimeout,
-		maxTimeout: maxTimeout,
-		alpha:      alpha,
-		beta:       beta,
-		k:          k,
+		config: config,
 	}
+}
+
+// Default creates a new Tracker configured with default config.
+func Default() *Tracker {
+	return New(DefaultConfig())
 }
 
 // Update records a new latency sample and updates SRTT and RTTVAR calculations.
@@ -52,9 +51,9 @@ func (t *Tracker) Update(rttSample time.Duration) {
 	// diff = |SRTT - RTT_sample|
 	diff := math.Abs(float64(t.smoothedRTT - rttSample))
 	// RTTVAR = (1 - beta) * RTTVAR + beta * diff
-	t.rttVar = time.Duration((1-t.beta)*float64(t.rttVar) + t.beta*float64(diff))
+	t.rttVar = time.Duration((1-t.config.Beta)*float64(t.rttVar) + t.config.Beta*float64(diff))
 	// SRTT = (1 - alpha) * SRTT + alpha * RTT_sample
-	t.smoothedRTT = time.Duration((1-t.alpha)*float64(t.smoothedRTT) + t.alpha*float64(rttSample))
+	t.smoothedRTT = time.Duration((1-t.config.Alpha)*float64(t.smoothedRTT) + t.config.Alpha*float64(rttSample))
 }
 
 // Timeout returns the current dynamic deadline duration clamped to configured boundaries.
@@ -63,12 +62,12 @@ func (t *Tracker) Timeout() time.Duration {
 	defer t.mu.RUnlock()
 
 	if !t.initialized {
-		return t.maxTimeout
+		return t.config.MaxTimeout
 	}
 
 	// timeout = SRTT + K * RTTVAR
-	timeout := time.Duration(float64(t.smoothedRTT) + t.k*float64(t.rttVar))
-	return min(max(t.minTimeout, timeout), t.maxTimeout)
+	timeout := time.Duration(float64(t.smoothedRTT) + t.config.K*float64(t.rttVar))
+	return min(max(t.config.MinTimeout, timeout), t.config.MaxTimeout)
 }
 
 // SmoothedRTT returns the current SRTT.
