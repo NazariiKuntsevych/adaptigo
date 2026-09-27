@@ -1,5 +1,6 @@
 // Package transport provides an HTTP client decorator combining circuit breaking,
-// adaptive concurrency limiting, and dynamic timeouts into an integrated pipeline.
+// adaptive concurrency limiting, dynamic timeouts, and Zero-Trust token injection
+// into an integrated resilience pipeline.
 package transport
 
 import (
@@ -11,6 +12,7 @@ import (
 	"adaptigo/pkg/breaker"
 	"adaptigo/pkg/limiter"
 	"adaptigo/pkg/timeout"
+	"adaptigo/pkg/zerotrust"
 )
 
 // bodyWithCancel wraps an io.ReadCloser to ensure the associated context is canceled upon closure.
@@ -33,6 +35,9 @@ type Transport struct {
 	breaker      *breaker.Breaker
 	limiter      *limiter.Limiter
 	tracker      *timeout.Tracker
+	tokenManager *zerotrust.TokenManager
+	callerID     string
+	targetID     string
 }
 
 // Option represents a configuration option to be applied to transport during initialization.
@@ -59,6 +64,15 @@ func WithTimeout(tracker *timeout.Tracker) Option {
 	}
 }
 
+// WithZeroTrust attaches a cryptographic TokenManager and service identities to enforce inter-service authentication.
+func WithZeroTrust(tokenManager *zerotrust.TokenManager, callerID, targetID string) Option {
+	return func(t *Transport) {
+		t.tokenManager = tokenManager
+		t.callerID = callerID
+		t.targetID = targetID
+	}
+}
+
 // New creates a new Transport using provided options and base transport.
 func New(base http.RoundTripper, options ...Option) *Transport {
 	if base == nil {
@@ -82,8 +96,8 @@ func Default() *Transport {
 	)
 }
 
-// RoundTrip executes outbound HTTP calls protected by the adaptive resilience chain:
-// Breaker -> Limiter -> Dynamic Timeout.
+// RoundTrip executes outbound HTTP calls protected by the adaptive resilience and security chain:
+// Breaker -> Limiter -> Dynamic Timeout -> Zero-Trust.
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Breaker check
 	if t.breaker != nil {
@@ -113,6 +127,16 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		ctx, cancel = context.WithCancel(req.Context())
 	}
 	clonedReq := req.Clone(ctx)
+
+	// Zero-Trust token injection
+	if t.tokenManager != nil {
+		token, err := t.tokenManager.Issue(t.callerID, t.targetID)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		clonedReq.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	// Request
 	start := time.Now()
