@@ -7,20 +7,6 @@ import (
 	"time"
 )
 
-// status represents the operational outcome classification of an HTTP request invocation.
-type status int
-
-const (
-	// statusSuccess denotes an operation that returned an HTTP status below 500.
-	statusSuccess status = iota
-
-	// statusThrottled indicates client-side shedding via circuit breaking or rate-limiting.
-	statusThrottled
-
-	// statusFailure denotes transport errors, context timeouts, or 5xx server responses.
-	statusFailure
-)
-
 // staticClient represents a baseline HTTP client implementation using a fixed timeout
 // and a traditional consecutive-failure circuit breaker without adaptive capabilities.
 type staticClient struct {
