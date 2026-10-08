@@ -64,7 +64,6 @@ func (sb *staticBreaker) allow() error {
 	defer sb.mu.Unlock()
 
 	now := time.Now()
-
 	if sb.state == stateOpen && now.After(sb.openUntil) {
 		sb.state = stateHalfOpen
 	}
@@ -90,7 +89,6 @@ func (sb *staticBreaker) update(success bool) {
 	defer sb.mu.Unlock()
 
 	now := time.Now()
-
 	switch sb.state {
 	case stateClosed:
 		if !success {

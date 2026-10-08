@@ -19,16 +19,16 @@ type chaosServer struct {
 
 // newChaosServer spins up an in-process HTTP test server with initial fault profiles.
 func newChaosServer(initialDelay time.Duration, initialErrorRate float64) *chaosServer {
-	chaosServer := &chaosServer{
+	cs := &chaosServer{
 		delay:     initialDelay,
 		errorRate: initialErrorRate,
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/work", chaosServer.handleWork)
+	mux.HandleFunc("/api/work", cs.handleWork)
 
-	chaosServer.server = httptest.NewServer(mux)
-	return chaosServer
+	cs.server = httptest.NewServer(mux)
+	return cs
 }
 
 // url returns the fully qualified target URL pointing to the work endpoint.

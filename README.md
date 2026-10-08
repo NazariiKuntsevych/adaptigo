@@ -42,6 +42,7 @@ func main() {
 	// 1. Initialize Security (Zero-Trust)
 	secret := []byte("crypto-secret-key")
 	tokenManager := zerotrust.NewTokenManager(secret, 5*time.Minute)
+	defer tokenManager.Stop()
 
 	// 2. Build the resilient and secure Transport
 	resilientTransport := transport.New(
@@ -113,6 +114,7 @@ func main() {
 	// 1. Initialize Security (Zero-Trust)
 	secret := []byte("crypto-secret-key")
 	tokenManager := zerotrust.NewTokenManager(secret, 5*time.Minute)
+	defer tokenManager.Stop()
 
 	// 2. Define explicit access rules
 	policyEngine := zerotrust.NewPolicyEngine()

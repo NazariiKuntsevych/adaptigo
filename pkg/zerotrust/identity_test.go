@@ -12,6 +12,7 @@ import (
 func TestTokenManager_IssueAndVerifySuccess(t *testing.T) {
 	secret := []byte("crypto-test-secret-key")
 	tm := zerotrust.NewTokenManager(secret, 5*time.Minute)
+	defer tm.Stop()
 
 	token, err := tm.Issue("service-client", "service-backend")
 	if err != nil {
@@ -37,6 +38,7 @@ func TestTokenManager_IssueAndVerifySuccess(t *testing.T) {
 func TestTokenManager_VerifyTamperedSignature(t *testing.T) {
 	secret := []byte("crypto-test-secret-key")
 	tm := zerotrust.NewTokenManager(secret, 5*time.Minute)
+	defer tm.Stop()
 
 	token, err := tm.Issue("service-client", "service-backend")
 	if err != nil {
@@ -56,14 +58,14 @@ func TestTokenManager_VerifyExpired(t *testing.T) {
 	secret := []byte("crypto-test-secret-key")
 	// Issue with negative TTL to immediately expire
 	tm := zerotrust.NewTokenManager(secret, -2*time.Second)
+	defer tm.Stop()
 
 	token, err := tm.Issue("service-client", "service-backend")
 	if err != nil {
 		t.Fatalf("Issue() = %v, want nil", err)
 	}
 
-	_, err = tm.Verify(token, "service-backend")
-	if !errors.Is(err, zerotrust.ErrTokenExpired) {
+	if _, err = tm.Verify(token, "service-backend"); !errors.Is(err, zerotrust.ErrTokenExpired) {
 		t.Errorf("Verify() = %v, want %v", err, zerotrust.ErrTokenExpired)
 	}
 }
@@ -71,14 +73,42 @@ func TestTokenManager_VerifyExpired(t *testing.T) {
 func TestTokenManager_VerifyAudienceMismatch(t *testing.T) {
 	secret := []byte("crypto-test-secret-key")
 	tm := zerotrust.NewTokenManager(secret, 5*time.Minute)
+	defer tm.Stop()
 
 	token, err := tm.Issue("service-client", "service-backend")
 	if err != nil {
 		t.Fatalf("Issue() = %v, want nil", err)
 	}
 
-	_, err = tm.Verify(token, "service-inventory")
-	if !errors.Is(err, zerotrust.ErrAudienceMismatch) {
+	if _, err = tm.Verify(token, "service-inventory"); !errors.Is(err, zerotrust.ErrAudienceMismatch) {
 		t.Errorf("Verify() = %v, want %v", err, zerotrust.ErrAudienceMismatch)
 	}
+}
+
+func TestTokenManager_VerifyReplayAttack(t *testing.T) {
+	secret := []byte("crypto-test-secret-key")
+	tm := zerotrust.NewTokenManager(secret, 5*time.Minute)
+	defer tm.Stop()
+
+	token, err := tm.Issue("service-client", "service-backend")
+	if err != nil {
+		t.Fatalf("Issue() = %v, want nil", err)
+	}
+
+	if _, err := tm.Verify(token, "service-backend"); err != nil {
+		t.Fatalf("Verify() = %v, want nil", err)
+	}
+
+	if _, err = tm.Verify(token, "service-backend"); !errors.Is(err, zerotrust.ErrReplayDetected) {
+		t.Errorf("Verify() = %v, want %v", err, zerotrust.ErrReplayDetected)
+	}
+}
+
+func TestTokenManager_StopIdempotent(_ *testing.T) {
+	secret := []byte("crypto-test-secret-key")
+	tm := zerotrust.NewTokenManager(secret, 5*time.Minute)
+
+	tm.Stop()
+	tm.Stop()
+	tm.Stop()
 }

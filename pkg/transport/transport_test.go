@@ -147,6 +147,7 @@ func TestTransport_LimiterRejectionAndRollback(t *testing.T) {
 func TestTransport_ZeroTrustInjection(t *testing.T) {
 	secret := []byte("crypto-test-secret-key")
 	tm := zerotrust.NewTokenManager(secret, 5*time.Minute)
+	defer tm.Stop()
 
 	var capturedAuthHeader string
 	base := roundTripFunc(func(req *http.Request) (*http.Response, error) {

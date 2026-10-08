@@ -4,7 +4,6 @@ package limiter
 
 import (
 	"errors"
-	"math"
 	"sync"
 	"time"
 )
@@ -90,14 +89,14 @@ func (l *Limiter) Update(rttSample time.Duration, success bool) {
 
 		// gradient = RTT_base / RTT_sample.
 		gradient := float64(l.baseRTT) / float64(rttSample)
-		gradient = math.Max(0.5, math.Min(1.0, gradient))
+		gradient = max(0.5, min(1.0, gradient))
 		// newLimit = limit * gradient + queueHeadroom
 		newLimit = l.limit*gradient + l.config.QueueHeadroom
 	}
 
 	// limit = (1 - smoothing) * limit + smoothing * newLimit
 	smoothedLimit := (1-l.config.SmoothingFactor)*l.limit + l.config.SmoothingFactor*newLimit
-	l.limit = math.Max(l.config.MinLimit, math.Min(l.config.MaxLimit, smoothedLimit))
+	l.limit = max(l.config.MinLimit, min(l.config.MaxLimit, smoothedLimit))
 }
 
 // Limit returns the current calculated concurrency capacity.
