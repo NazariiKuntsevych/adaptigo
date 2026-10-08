@@ -19,6 +19,9 @@ func TestPolicyEngine_Authorize(t *testing.T) {
 	pe := zerotrust.NewPolicyEngine()
 	pe.AddRule("service-a", "service-b", "GET", "/api/work")
 
+	if err := pe.Authorize("service-a", "service-b", "GET", "/api/work"); err != nil {
+		t.Errorf("Authorize() = %v, want nil", err)
+	}
 	if err := pe.Authorize("service-a", "service-b", "GET", "/api/work/item-1"); err != nil {
 		t.Errorf("Authorize() = %v, want nil", err)
 	}
@@ -47,6 +50,12 @@ func TestPolicyEngine_UnauthorizedPath(t *testing.T) {
 	pe.AddRule("service-a", "service-b", "GET", "/api/work")
 
 	if err := pe.Authorize("service-a", "service-b", "GET", "/admin/metrics"); !errors.Is(err, zerotrust.ErrAccessDenied) {
+		t.Errorf("Authorize() = %v, want %v", err, zerotrust.ErrAccessDenied)
+	}
+	if err := pe.Authorize("service-a", "service-b", "GET", "/api/work-secrets"); !errors.Is(err, zerotrust.ErrAccessDenied) {
+		t.Errorf("Authorize() = %v, want %v", err, zerotrust.ErrAccessDenied)
+	}
+	if err := pe.Authorize("service-a", "service-b", "GET", "/api/work_secrets"); !errors.Is(err, zerotrust.ErrAccessDenied) {
 		t.Errorf("Authorize() = %v, want %v", err, zerotrust.ErrAccessDenied)
 	}
 }

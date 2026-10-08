@@ -2,6 +2,7 @@ package zerotrust
 
 import (
 	"errors"
+	"path"
 	"strings"
 	"sync"
 )
@@ -46,17 +47,18 @@ func (pe *PolicyEngine) AddRule(caller, target, method, pathPrefix string) {
 		caller:     caller,
 		target:     target,
 		method:     strings.ToUpper(method),
-		pathPrefix: pathPrefix,
+		pathPrefix: path.Clean(pathPrefix),
 	})
 }
 
 // Authorize determines whether the authenticated caller has permission to perform the requested operation.
 // Returns nil if an explicit grant matches the request, or ErrAccessDenied otherwise.
-func (pe *PolicyEngine) Authorize(caller, target, method, path string) error {
+func (pe *PolicyEngine) Authorize(caller, target, method, rawPath string) error {
 	pe.mu.RLock()
 	defer pe.mu.RUnlock()
 
 	normalizedMethod := strings.ToUpper(method)
+	cleanPath := path.Clean(rawPath)
 
 	for _, rule := range pe.rules {
 		if rule.caller != "*" && rule.caller != caller {
@@ -68,7 +70,7 @@ func (pe *PolicyEngine) Authorize(caller, target, method, path string) error {
 		if rule.method != "*" && rule.method != normalizedMethod {
 			continue
 		}
-		if !strings.HasPrefix(path, rule.pathPrefix) {
+		if rule.pathPrefix != "*" && cleanPath != rule.pathPrefix && !strings.HasPrefix(cleanPath, strings.TrimSuffix(rule.pathPrefix, "/")+"/") {
 			continue
 		}
 		return nil

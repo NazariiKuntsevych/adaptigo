@@ -5,6 +5,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"time"
@@ -45,31 +46,31 @@ type Option func(*Transport)
 
 // WithBreaker attaches a circuit breaker to the transport pipeline.
 func WithBreaker(breaker *breaker.Breaker) Option {
-	return func(t *Transport) {
-		t.breaker = breaker
+	return func(tp *Transport) {
+		tp.breaker = breaker
 	}
 }
 
 // WithLimiter attaches an adaptive concurrency limiter to the transport pipeline.
 func WithLimiter(limiter *limiter.Limiter) Option {
-	return func(t *Transport) {
-		t.limiter = limiter
+	return func(tp *Transport) {
+		tp.limiter = limiter
 	}
 }
 
 // WithTimeout attaches a dynamic RTT timeout tracker to the transport pipeline.
 func WithTimeout(tracker *timeout.Tracker) Option {
-	return func(t *Transport) {
-		t.tracker = tracker
+	return func(tp *Transport) {
+		tp.tracker = tracker
 	}
 }
 
 // WithZeroTrust attaches a cryptographic TokenManager and service identities to enforce inter-service authentication.
 func WithZeroTrust(tokenManager *zerotrust.TokenManager, callerID, targetID string) Option {
-	return func(t *Transport) {
-		t.tokenManager = tokenManager
-		t.callerID = callerID
-		t.targetID = targetID
+	return func(tp *Transport) {
+		tp.tokenManager = tokenManager
+		tp.callerID = callerID
+		tp.targetID = targetID
 	}
 }
 
@@ -79,11 +80,11 @@ func New(base http.RoundTripper, options ...Option) *Transport {
 		base = http.DefaultTransport
 	}
 
-	transport := &Transport{base: base}
+	tp := &Transport{base: base}
 	for _, option := range options {
-		option(transport)
+		option(tp)
 	}
-	return transport
+	return tp
 }
 
 // Default creates a new Transport using resilience components with default configs and default base transport.
@@ -98,20 +99,20 @@ func Default() *Transport {
 
 // RoundTrip executes outbound HTTP calls protected by the adaptive resilience and security chain:
 // Breaker -> Limiter -> Dynamic Timeout -> Zero-Trust.
-func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (tp *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Breaker check
-	if t.breaker != nil {
-		if err := t.breaker.Allow(); err != nil {
+	if tp.breaker != nil {
+		if err := tp.breaker.Allow(); err != nil {
 			return nil, err
 		}
 	}
 
 	// Limiter reservation
-	if t.limiter != nil {
-		release, err := t.limiter.Acquire()
+	if tp.limiter != nil {
+		release, err := tp.limiter.Acquire()
 		if err != nil {
-			if t.breaker != nil {
-				t.breaker.RollbackProbe()
+			if tp.breaker != nil {
+				tp.breaker.RollbackProbe()
 			}
 			return nil, err
 		}
@@ -121,18 +122,21 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Deadline context
 	var ctx context.Context
 	var cancel context.CancelFunc
-	if t.tracker != nil {
-		ctx, cancel = context.WithTimeout(req.Context(), t.tracker.Timeout())
+	if tp.tracker != nil {
+		ctx, cancel = context.WithTimeout(req.Context(), tp.tracker.Timeout())
 	} else {
 		ctx, cancel = context.WithCancel(req.Context())
 	}
 	clonedReq := req.Clone(ctx)
 
 	// Zero-Trust token injection
-	if t.tokenManager != nil {
-		token, err := t.tokenManager.Issue(t.callerID, t.targetID)
+	if tp.tokenManager != nil {
+		token, err := tp.tokenManager.Issue(tp.callerID, tp.targetID)
 		if err != nil {
 			cancel()
+			if tp.breaker != nil {
+				tp.breaker.RollbackProbe()
+			}
 			return nil, err
 		}
 		clonedReq.Header.Set("Authorization", "Bearer "+token)
@@ -140,31 +144,37 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	// Request
 	start := time.Now()
-	resp, reqErr := t.base.RoundTrip(clonedReq)
+	resp, reqErr := tp.base.RoundTrip(clonedReq)
 	latency := time.Since(start)
 
 	// Result update for errors
 	if reqErr != nil {
 		cancel()
-		if t.breaker != nil {
-			t.breaker.Update(false)
-		}
-		if t.limiter != nil {
-			t.limiter.Update(latency, false)
+		if errors.Is(req.Context().Err(), context.Canceled) {
+			if tp.breaker != nil {
+				tp.breaker.RollbackProbe()
+			}
+		} else {
+			if tp.breaker != nil {
+				tp.breaker.Update(false)
+			}
+			if tp.limiter != nil {
+				tp.limiter.Update(latency, false)
+			}
 		}
 		return nil, reqErr
 	}
 
 	// Result update for status
-	success := resp.StatusCode < http.StatusInternalServerError
-	if t.breaker != nil {
-		t.breaker.Update(success)
+	success := resp.StatusCode < http.StatusInternalServerError && resp.StatusCode != http.StatusTooManyRequests
+	if tp.breaker != nil {
+		tp.breaker.Update(success)
 	}
-	if t.limiter != nil {
-		t.limiter.Update(latency, success)
+	if tp.limiter != nil {
+		tp.limiter.Update(latency, success)
 	}
-	if t.tracker != nil && success {
-		t.tracker.Update(latency)
+	if tp.tracker != nil && success {
+		tp.tracker.Update(latency)
 	}
 
 	// Body check

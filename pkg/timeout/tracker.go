@@ -33,55 +33,55 @@ func Default() *Tracker {
 }
 
 // Update records a new latency sample and updates SRTT and RTTVAR calculations.
-func (t *Tracker) Update(rttSample time.Duration) {
+func (tr *Tracker) Update(rttSample time.Duration) {
 	if rttSample <= 0 {
 		return
 	}
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
 
-	if !t.initialized {
-		t.smoothedRTT = rttSample
-		t.rttVar = rttSample / 2
-		t.initialized = true
+	if !tr.initialized {
+		tr.smoothedRTT = rttSample
+		tr.rttVar = rttSample / 2
+		tr.initialized = true
 		return
 	}
 
 	// diff = |SRTT - RTT_sample|
-	diff := math.Abs(float64(t.smoothedRTT - rttSample))
+	diff := math.Abs(float64(tr.smoothedRTT - rttSample))
 	// RTTVAR = (1 - beta) * RTTVAR + beta * diff
-	t.rttVar = time.Duration((1-t.config.Beta)*float64(t.rttVar) + t.config.Beta*float64(diff))
+	tr.rttVar = time.Duration((1-tr.config.Beta)*float64(tr.rttVar) + tr.config.Beta*float64(diff))
 	// SRTT = (1 - alpha) * SRTT + alpha * RTT_sample
-	t.smoothedRTT = time.Duration((1-t.config.Alpha)*float64(t.smoothedRTT) + t.config.Alpha*float64(rttSample))
+	tr.smoothedRTT = time.Duration((1-tr.config.Alpha)*float64(tr.smoothedRTT) + tr.config.Alpha*float64(rttSample))
 }
 
 // Timeout returns the current dynamic deadline duration clamped to configured boundaries.
-func (t *Tracker) Timeout() time.Duration {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
+func (tr *Tracker) Timeout() time.Duration {
+	tr.mu.RLock()
+	defer tr.mu.RUnlock()
 
-	if !t.initialized {
-		return t.config.MaxTimeout
+	if !tr.initialized {
+		return tr.config.MaxTimeout
 	}
 
 	// timeout = SRTT + K * RTTVAR
-	timeout := time.Duration(float64(t.smoothedRTT) + t.config.K*float64(t.rttVar))
-	return min(max(t.config.MinTimeout, timeout), t.config.MaxTimeout)
+	timeout := time.Duration(float64(tr.smoothedRTT) + tr.config.K*float64(tr.rttVar))
+	return min(max(tr.config.MinTimeout, timeout), tr.config.MaxTimeout)
 }
 
 // SmoothedRTT returns the current SRTT.
-func (t *Tracker) SmoothedRTT() time.Duration {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
+func (tr *Tracker) SmoothedRTT() time.Duration {
+	tr.mu.RLock()
+	defer tr.mu.RUnlock()
 
-	return t.smoothedRTT
+	return tr.smoothedRTT
 }
 
 // RTTVar returns the current RTTVAR.
-func (t *Tracker) RTTVar() time.Duration {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
+func (tr *Tracker) RTTVar() time.Duration {
+	tr.mu.RLock()
+	defer tr.mu.RUnlock()
 
-	return t.rttVar
+	return tr.rttVar
 }

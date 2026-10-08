@@ -79,7 +79,6 @@ func (b *Breaker) Allow() error {
 	defer b.mu.Unlock()
 
 	now := time.Now()
-
 	if b.state == StateOpen && now.After(b.openUntil) {
 		b.toHalfOpen(now)
 	}
@@ -120,7 +119,6 @@ func (b *Breaker) Update(success bool) {
 	defer b.mu.Unlock()
 
 	now := time.Now()
-
 	switch b.state {
 	case StateClosed:
 		b.window.Update(success)
@@ -181,7 +179,7 @@ func (b *Breaker) toOpen(now time.Time) {
 	b.successfulProbes = 0
 	b.window.Reset()
 
-	factor := math.Pow(2, float64(b.consecutiveTrips))
+	factor := math.Pow(2, float64(min(b.consecutiveTrips, 16)))
 	cooldown := float64(b.config.BaseCooldown) * factor
 	backoff := min(cooldown, float64(b.config.MaxCooldown))
 	//nolint:gosec // G404: weak random generator is safe for calculating retry jitter

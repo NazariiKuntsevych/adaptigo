@@ -122,6 +122,7 @@ func BenchmarkPipeline_ResilienceOnly(b *testing.B) {
 func BenchmarkPipeline_ResilienceWithZeroTrust(b *testing.B) {
 	secret := []byte("crypto-benchmark-secret-key")
 	tm := zerotrust.NewTokenManager(secret, 5*time.Minute)
+	defer tm.Stop()
 	pe := zerotrust.NewPolicyEngine()
 	pe.AddRule("service-client", "service-backend", "GET", "/benchmark")
 

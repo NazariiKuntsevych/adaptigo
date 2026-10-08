@@ -52,8 +52,8 @@ func (c *Config) Normalize() {
 	if c.BaseCooldown <= 0 {
 		c.BaseCooldown = defaultConfig.BaseCooldown
 	}
-	if c.BaseCooldown <= 0 {
-		c.BaseCooldown = defaultConfig.BaseCooldown
+	if c.MaxCooldown <= 0 {
+		c.MaxCooldown = defaultConfig.MaxCooldown
 	}
 	if c.MaxCooldown < c.BaseCooldown {
 		c.MaxCooldown = c.BaseCooldown * 30

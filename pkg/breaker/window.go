@@ -38,14 +38,14 @@ func NewWindow(duration time.Duration, buckets int) *Window {
 		buckets = 10
 	}
 
-	window := &Window{
+	w := &Window{
 		buckets:        make([]bucket, buckets),
 		bucketDuration: duration / time.Duration(buckets),
 		windowDuration: duration,
 	}
 	now := time.Now()
-	window.reset(now)
-	return window
+	w.reset(now)
+	return w
 }
 
 // Update tallies an operation result in the current active bucket.

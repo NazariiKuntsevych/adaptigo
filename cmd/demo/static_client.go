@@ -45,7 +45,7 @@ func (sc *staticClient) do(ctx context.Context, targetURL string) (time.Duration
 	resp, reqErr := sc.base.Do(req)
 	latency := time.Since(start)
 
-	success := (reqErr == nil && resp.StatusCode < http.StatusInternalServerError)
+	success := (reqErr == nil && resp.StatusCode < http.StatusInternalServerError && resp.StatusCode != http.StatusTooManyRequests)
 	sc.breaker.update(success)
 
 	if reqErr != nil {
